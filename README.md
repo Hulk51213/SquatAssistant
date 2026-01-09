@@ -41,3 +41,12 @@ From these landmarks, the system:
 ## Installation (Source)
 ```bash
 git clone https://github.com/Hulk51213/SquatAssistant
+
+## 📄 License
+
+This project is licensed under the **MIT License**.
+
+You are free to use, modify, and distribute this software, provided that the original copyright
+and license notice are included.
+
+© 2026 Manas Yeola
