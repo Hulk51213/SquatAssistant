@@ -38,10 +38,6 @@ From these landmarks, the system:
 - **PySide6 (Qt)** – desktop UI  
 - **PyInstaller** – Windows executable packaging  
 
-## Installation (Source)
-```bash
-git clone https://github.com/Hulk51213/SquatAssistant
-
 ## 📄 License
 
 This project is licensed under the **MIT License**.
@@ -50,3 +46,6 @@ You are free to use, modify, and distribute this software, provided that the ori
 and license notice are included.
 
 © 2026 Manas Yeola
+## Installation (Source)
+```bash
+git clone https://github.com/Hulk51213/SquatAssistant
