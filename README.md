@@ -1,25 +1,25 @@
-# RepRight 🏋️‍♂️  
+# RepRight 
 AI-Powered Exercise Form & Rep Detection using Google MediaPipe
 
 ---
 
-## 🚀 Overview
+## Overview
 **RepRight** is a real-time computer vision fitness assistant that analyzes squat form and counts repetitions using a standard webcam.  
 It provides instant visual and audio feedback to help users maintain proper form and reduce injury risk — all without wearable devices.
 
 ---
 
-## ✨ Key Features
-- ✅ Real-time squat rep counting  
-- ✅ Full-body pose detection  
-- ✅ Spine alignment & posture validation  
-- ✅ Form stability smoothing (no flicker)  
-- ✅ Desktop UI with instant feedback  
-- ✅ Runs fully offline (privacy-friendly)
+##  Key Features
+- Real-time squat rep counting  
+- Full-body pose detection  
+- Spine alignment & posture validation  
+- Form stability smoothing (no flicker)  
+- Desktop UI with instant feedback  
+- Runs fully offline (privacy-friendly)
 
 ---
 
-## 🧠 How It Works
+## How It Works
 RepRight uses **Google MediaPipe Pose** to extract 33 human body landmarks per frame.
 
 From these landmarks, the system:
@@ -30,7 +30,7 @@ From these landmarks, the system:
 
 ---
 
-## 🛠️ Tech Stack
+## Tech Stack
 - **Google MediaPipe Pose** – real-time pose estimation  
 - **Python** – core logic  
 - **OpenCV** – video processing  
@@ -38,6 +38,6 @@ From these landmarks, the system:
 - **PySide6 (Qt)** – desktop UI  
 - **PyInstaller** – Windows executable packaging  
 
-## 📦 Installation (Source)
+## Installation (Source)
 ```bash
 git clone https://github.com/Hulk51213/SquatAssistant
