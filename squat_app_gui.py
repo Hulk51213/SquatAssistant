@@ -1,4 +1,15 @@
+"""
+Squat Assistant – Stable & Accurate Version
+Fixes:
+- Rep counter reliability
+- Landmark visibility checks
+- Spine (torso) detection
+- Frame flicker
+- Sound in EXE
+"""
+
 import sys
+import os
 import time
 import math
 from collections import deque
@@ -7,10 +18,31 @@ import cv2
 import numpy as np
 import mediapipe as mp
 from PySide6 import QtCore, QtGui, QtWidgets
-from PySide6.QtMultimedia import QSoundEffect
 
+# -------------------- RESOURCE PATH (EXE SAFE) --------------------
 
-# -------------------- Math Utilities --------------------
+def resource_path(relative_path):
+    try:
+        base_path = sys._MEIPASS  # PyInstaller
+    except Exception:
+        base_path = os.path.abspath(".")
+    return os.path.join(base_path, relative_path)
+
+# -------------------- SOUND --------------------
+
+if sys.platform.startswith("win"):
+    import winsound
+
+def play_click():
+    try:
+        winsound.PlaySound(
+            resource_path("click.wav"),
+            winsound.SND_FILENAME | winsound.SND_ASYNC
+        )
+    except Exception:
+        pass
+
+# -------------------- MATH UTILITIES --------------------
 
 def angle(a, b, c):
     a, b, c = map(lambda x: np.array(x, dtype=np.float32), (a, b, c))
@@ -20,39 +52,47 @@ def angle(a, b, c):
     cosang = np.dot(ba, bc) / (np.linalg.norm(ba) * np.linalg.norm(bc))
     return math.degrees(math.acos(np.clip(cosang, -1.0, 1.0)))
 
-
-def torso_angle(mid_sh, mid_hip):
-    v = np.array(mid_sh) - np.array(mid_hip)
-    v = v / (np.linalg.norm(v) + 1e-6)
-    vertical = np.array([0.0, -1.0])
-    dot = np.dot(v, vertical)
-    return math.degrees(math.acos(np.clip(dot, -1.0, 1.0)))
-
-
-class Smoother:
-    def __init__(self, n=6):
-        self.buf = deque(maxlen=n)
+class MedianSmoother:
+    def __init__(self, size=7):
+        self.buf = deque(maxlen=size)
 
     def update(self, v):
         self.buf.append(v)
-        return sum(self.buf) / len(self.buf)
+        return sorted(self.buf)[len(self.buf)//2]
 
+# -------------------- REP COUNTER --------------------
 
-class DecisionSmoother:
-    def __init__(self, n=7):
-        self.buf = deque(maxlen=n)
+class RepCounter:
+    def __init__(self):
+        self.state = "up"
+        self.count = 0
+        self.hold = 0
 
-    def update(self, v):
-        if v is not None:
-            self.buf.append(v)
-        if self.buf.count(True) >= 5:
-            return True
-        if self.buf.count(False) >= 5:
-            return False
-        return None
+    def update(self, knee_angle):
+        DOWN_TH = 100
+        UP_TH = 150
+        HOLD_FRAMES = 3
 
+        if self.state == "up":
+            if knee_angle < DOWN_TH:
+                self.hold += 1
+                if self.hold >= HOLD_FRAMES:
+                    self.state = "down"
+                    self.hold = 0
+            else:
+                self.hold = 0
 
-# -------------------- Video Thread --------------------
+        elif self.state == "down":
+            if knee_angle > UP_TH:
+                self.hold += 1
+                if self.hold >= HOLD_FRAMES:
+                    self.count += 1
+                    self.state = "up"
+                    self.hold = 0
+            else:
+                self.hold = 0
+
+# -------------------- VIDEO THREAD --------------------
 
 class VideoThread(QtCore.QThread):
     frame_signal = QtCore.Signal(QtGui.QImage)
@@ -66,22 +106,19 @@ class VideoThread(QtCore.QThread):
         self.countdown = -1
         self.last_tick = time.time()
 
-        self.reps = 0
-        self.state = "up"
-
         self.pose = mp.solutions.pose.Pose(
-            model_complexity=1,
-            min_detection_confidence=0.5,
-            min_tracking_confidence=0.5
+            static_image_mode=False,
+            model_complexity=2,
+            min_detection_confidence=0.35,
+            min_tracking_confidence=0.4
         )
 
-        self.knee_s = Smoother()
-        self.torso_s = Smoother()
-        self.form_smoother = DecisionSmoother()
+        self.knee_s = MedianSmoother()
+        self.spine_s = MedianSmoother()
+        self.counter = RepCounter()
 
     def start_workout(self):
-        self.reps = 0
-        self.state = "up"
+        self.counter = RepCounter()
         self.countdown = 3
         self.active = False
         self.blur = False
@@ -100,17 +137,16 @@ class VideoThread(QtCore.QThread):
                 continue
 
             h, w = frame.shape[:2]
-            raw_form = None
+            good = None
 
+            # -------- COUNTDOWN --------
             if self.countdown >= 0:
                 if time.time() - self.last_tick >= 1:
                     self.countdown -= 1
                     self.last_tick = time.time()
-
-                txt = "GO" if self.countdown == 0 else str(self.countdown)
-                cv2.putText(frame, txt, (w//2 - 80, h//2),
+                text = "GO" if self.countdown == 0 else str(self.countdown)
+                cv2.putText(frame, text, (w//2-80, h//2),
                             cv2.FONT_HERSHEY_SIMPLEX, 4, (255,255,255), 8)
-
                 if self.countdown == 0:
                     self.active = True
                     self.countdown = -1
@@ -118,62 +154,56 @@ class VideoThread(QtCore.QThread):
             if self.blur:
                 frame = cv2.GaussianBlur(frame, (31,31), 0)
 
+            # -------- POSE --------
             if self.active:
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 res = self.pose.process(rgb)
 
                 if res.pose_landmarks:
                     lm = res.pose_landmarks.landmark
+                    px = lambda i: (int(lm[i].x*w), int(lm[i].y*h))
 
-                    if min(lm[25].visibility, lm[26].visibility,
-                           lm[27].visibility, lm[28].visibility) >= 0.5:
+                    vis = lambda i: lm[i].visibility > 0.45
 
-                        p = lambda i: (int(lm[i].x * w), int(lm[i].y * h))
-                        lh, lk, la = p(23), p(25), p(27)
-                        rh, rk, ra = p(24), p(26), p(28)
-                        ls, rs = p(11), p(12)
+                    needed = [23,24,25,26,27,28,11,12]
+                    if sum(vis(i) for i in needed) >= 4:
+                        lh, rh = px(23), px(24)
+                        lk, rk = px(25), px(26)
+                        la, ra = px(27), px(28)
+                        ls, rs = px(11), px(12)
+
+                        knee = self.knee_s.update(min(
+                            angle(lh, lk, la),
+                            angle(rh, rk, ra)
+                        ))
 
                         mid_hip = ((lh[0]+rh[0])//2, (lh[1]+rh[1])//2)
                         mid_sh = ((ls[0]+rs[0])//2, (ls[1]+rs[1])//2)
 
-                        knee_angle = min(
-                            angle(lh, lk, la),
-                            angle(rh, rk, ra)
+                        spine = self.spine_s.update(
+                            angle(mid_sh, mid_hip, (mid_hip[0], mid_hip[1]-100))
                         )
-                        knee_angle = self.knee_s.update(knee_angle)
-                        torso = self.torso_s.update(torso_angle(mid_sh, mid_hip))
 
-                        if knee_angle < 120:
-                            depth_ok = knee_angle <= 100
-                            hip_ok = mid_hip[1] > max(lk[1], rk[1])
-                            torso_ok = torso <= 30
-                            raw_form = depth_ok and hip_ok and torso_ok
+                        self.counter.update(knee)
 
-                            color = (0,230,118) if raw_form else (255,23,68)
-                            for a,b in [(lh,lk),(lk,la),(rh,rk),(rk,ra),(mid_sh,mid_hip)]:
-                                cv2.line(frame, a, b, color, 6)
+                        good = knee <= 100 and spine <= 25
+                        color = (0,255,0) if good else (0,0,255)
 
-                        if self.state == "up" and knee_angle < 95:
-                            self.state = "down"
-                        elif self.state == "down" and knee_angle > 160:
-                            if raw_form:
-                                self.reps += 1
-                            self.state = "up"
+                        for a,b in [(lh,lk),(lk,la),(rh,rk),(rk,ra),(mid_sh,mid_hip)]:
+                            cv2.line(frame, a, b, color, 5)
 
-            final_form = self.form_smoother.update(raw_form)
-            self.status_signal.emit(final_form, self.reps)
+            self.status_signal.emit(good, self.counter.count)
 
             img = QtGui.QImage(frame.data, w, h, 3*w, QtGui.QImage.Format_BGR888)
             self.frame_signal.emit(img)
-            QtCore.QThread.msleep(1)
+
+            QtCore.QThread.msleep(30)  # stable FPS
 
         cap.release()
-        self.pose.close()
 
     def close(self):
         self.running = False
         self.wait()
-
 
 # -------------------- GUI --------------------
 
@@ -181,17 +211,11 @@ class MainWindow(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Squat Assistant")
-        self.showFullScreen()
-
-        self.click_sound = QSoundEffect()
-        self.click_sound.setSource(QtCore.QUrl.fromLocalFile("click.wav"))
-        self.click_sound.setVolume(0.25)
+        self.resize(1300, 750)
 
         central = QtWidgets.QWidget()
         self.setCentralWidget(central)
         layout = QtWidgets.QHBoxLayout(central)
-        layout.setContentsMargins(20,20,20,20)
-        layout.setSpacing(24)
 
         self.video = QtWidgets.QLabel()
         self.video.setFixedSize(850,650)
@@ -200,11 +224,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         panel = QtWidgets.QFrame()
         panel.setFixedWidth(360)
-        panel.setStyleSheet("""
-            background: rgba(255,255,255,0.18);
-            border-radius: 28px;
-            border: 1px solid rgba(255,255,255,0.25);
-        """)
+        panel.setStyleSheet("background:rgba(30,30,30,0.92); border-radius:28px;")
         p = QtWidgets.QVBoxLayout(panel)
         layout.addWidget(panel)
 
@@ -215,18 +235,15 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.badge = QtWidgets.QLabel("READY")
         self.badge.setAlignment(QtCore.Qt.AlignCenter)
-        self.badge.setFixedHeight(78)
-        self.badge.setStyleSheet("background:#2979FF; color:white; font-size:28px; border-radius:39px;")
+        self.badge.setFixedHeight(80)
+        self.badge.setStyleSheet("background:#2979FF; color:white; font-size:28px; border-radius:40px;")
         p.addWidget(self.badge)
 
         self.start = QtWidgets.QPushButton("START")
-        self.start.setFixedHeight(78)
-        self.start.setStyleSheet("background:#00E676; font-size:26px; font-weight:900; border-radius:22px;")
-        p.addWidget(self.start)
-
         self.stop = QtWidgets.QPushButton("STOP")
-        self.stop.setFixedHeight(64)
-        self.stop.setStyleSheet("background:#FF1744; color:white; font-size:22px; font-weight:800; border-radius:18px;")
+        self.start.setStyleSheet("background:#00E676; font-size:22px; padding:18px; font-weight:800;")
+        self.stop.setStyleSheet("background:#FF1744; color:white; font-size:18px; padding:16px; font-weight:700;")
+        p.addWidget(self.start)
         p.addWidget(self.stop)
 
         self.thread = VideoThread()
@@ -234,8 +251,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.thread.status_signal.connect(self.update_status)
         self.thread.start()
 
-        self.start.clicked.connect(lambda: (self.click_sound.play(), self.thread.start_workout()))
-        self.stop.clicked.connect(lambda: (self.click_sound.play(), self.thread.stop_workout()))
+        self.start.clicked.connect(lambda: (play_click(), self.thread.start_workout()))
+        self.stop.clicked.connect(lambda: (play_click(), self.thread.stop_workout()))
 
     def update_frame(self, img):
         self.video.setPixmap(QtGui.QPixmap.fromImage(img).scaled(
@@ -245,25 +262,22 @@ class MainWindow(QtWidgets.QMainWindow):
         self.reps.setText(str(reps))
         if good is None:
             self.badge.setText("READY")
+            self.badge.setStyleSheet("background:#2979FF; color:white; font-size:28px;")
         elif good:
             self.badge.setText("GOOD FORM")
-            self.badge.setStyleSheet("background:#00E676; color:#003300; font-size:28px; border-radius:39px;")
+            self.badge.setStyleSheet("background:#00E676; color:#003300; font-size:28px;")
         else:
             self.badge.setText("BAD FORM")
-            self.badge.setStyleSheet("background:#FF1744; color:white; font-size:28px; border-radius:39px;")
-
-    def keyPressEvent(self, event):
-        if event.key() == QtCore.Qt.Key_F11:
-            self.showNormal() if self.isFullScreen() else self.showFullScreen()
+            self.badge.setStyleSheet("background:#FF1744; color:white; font-size:28px;")
 
     def closeEvent(self, e):
         self.thread.close()
         e.accept()
 
-
 # -------------------- ENTRY --------------------
 
 if __name__ == "__main__":
     app = QtWidgets.QApplication(sys.argv)
-    win = MainWindow()
+    w = MainWindow()
+    w.show()
     sys.exit(app.exec())
