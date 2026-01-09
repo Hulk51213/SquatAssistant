@@ -49,3 +49,6 @@ and license notice are included.
 ## Installation (Source)
 ```bash
 git clone https://github.com/Hulk51213/SquatAssistant
+cd SquatAssistant
+pip install -r requirements.txt
+python squat_app_gui.py
